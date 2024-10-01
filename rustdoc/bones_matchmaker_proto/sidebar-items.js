@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MATCH_ALPN","PLAY_ALPN"],"enum":["MatchmakerRequest","MatchmakerResponse","TargetClient"],"struct":["MatchInfo","RecvProxyMessage","SendProxyMessage"]};
