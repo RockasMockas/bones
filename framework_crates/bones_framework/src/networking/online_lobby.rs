@@ -33,6 +33,9 @@ pub(crate) async fn resolve_list_lobbies(
         MatchmakerResponse::LobbiesList(lobbies) => {
             user_channel.try_send(OnlineMatchmakerResponse::LobbiesList(lobbies))?;
         }
+        MatchmakerResponse::Ping => {
+            info!("Received ping from matchmaker");
+        }
         other => anyhow::bail!("Unexpected message from matchmaker: {other:?}"),
     }
 
@@ -58,6 +61,9 @@ pub(crate) async fn resolve_create_lobby(
     match message {
         MatchmakerResponse::LobbyCreated(lobby_id) => {
             user_channel.try_send(OnlineMatchmakerResponse::LobbyCreated(lobby_id))?;
+        }
+        MatchmakerResponse::Ping => {
+            info!("Received ping from matchmaker");
         }
         MatchmakerResponse::Error(err) => {
             user_channel.try_send(OnlineMatchmakerResponse::Error(err))?;
@@ -104,6 +110,9 @@ pub(crate) async fn resolve_join_lobby(
                         info!("Online lobby updated player count: {player_count}");
                         user_channel
                             .try_send(OnlineMatchmakerResponse::LobbyUpdate { player_count })?;
+                    }
+                    MatchmakerResponse::Ping => {
+                        info!("Received ping from matchmaker");
                     }
                     MatchmakerResponse::Success {
                         random_seed,

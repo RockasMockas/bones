@@ -204,13 +204,11 @@ async fn send_matchmaking_updates(
             .unwrap_or_default()
     };
 
-    let current_count = connections.len() as u32;
+    // let current_count = connections.len() as u32;
     let mut active_connections = Vec::new();
 
     // Prepare first update message
-    let first_update_message = postcard::to_allocvec(&MatchmakerResponse::MatchmakingUpdate {
-        player_count: current_count,
-    })?;
+    let first_update_message = postcard::to_allocvec(&MatchmakerResponse::Ping)?;
 
     // Send first update and check active connections
     for (_index, conn) in connections.into_iter().enumerate() {

@@ -92,6 +92,9 @@ pub(crate) async fn resolve_search_for_match(
                         matchmaker_connection_state.close_connection();
                         return Ok(());
                     }
+                    MatchmakerResponse::Ping => {
+                        info!("Received ping from matchmaker");
+                    }
                     other => anyhow::bail!("Unexpected message from matchmaker: {other:?}"),
                 }
             }
@@ -126,6 +129,9 @@ pub(crate) async fn resolve_stop_search_for_match(
                     "Matchmaking stopped by user".to_string(),
                 ))
                 .await?;
+        }
+        MatchmakerResponse::Ping => {
+            info!("Received ping from matchmaker");
         }
         MatchmakerResponse::Error(error) => {
             anyhow::bail!("Failed to stop matchmaking: {}", error);

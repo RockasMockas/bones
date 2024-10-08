@@ -88,6 +88,8 @@ pub struct LobbyId(pub String);
 pub enum MatchmakerResponse {
     /// The connection has been accepted
     Accepted,
+    /// Matchmaker can send a Ping to the client to see if it is still alive
+    Ping,
     /// Response that specifies updates about the current matchmaking (ie. player count updates)
     MatchmakingUpdate { player_count: u32 },
     /// The desired client count has been reached, and the match may start.
