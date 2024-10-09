@@ -1121,8 +1121,20 @@ mod metadata {
             println!("Checking if valid file path: {}", s);
             let path = PathBuf::from(s);
 
-            // Combine the base path with the given path
-            let full_path = base_path.join(&path);
+            // If the path is absolute, use it as is
+            if path.is_absolute() {
+                println!("Checking absolute path: {:?}", path);
+                return if path.exists() {
+                    println!("Valid absolute path found: {:?}", path);
+                    Some(path)
+                } else {
+                    println!("Absolute path does not exist: {:?}", path);
+                    None
+                };
+            }
+
+            // For relative paths, combine with the base path
+            let full_path = base_path.join(&path).canonicalize().ok()?;
 
             println!("Checking path: {:?}", full_path);
             if full_path.exists() {
@@ -1150,11 +1162,14 @@ mod metadata {
             // Calculate the relative path from the base_path
             let relative_path = path.strip_prefix(base_path).unwrap_or(&path);
 
+            // Remove any leading "./" from the relative path
+            let cleaned_relative_path = relative_path.strip_prefix("./").unwrap_or(relative_path);
+
             let contents = self
                 .server
                 .io
                 .load_file(AssetLocRef {
-                    path: relative_path,
+                    path: cleaned_relative_path,
                     pack: self.loc.pack,
                 })
                 .await?;
@@ -1165,7 +1180,9 @@ mod metadata {
             println!("SchemaBox inserted into linked_files");
 
             println!("Recursively processing loaded file");
-            self.recursively_collect_linked_files(&contents, base_path, linked_files)
+            // Use the parent of the current file as the new base_path for recursive processing
+            let new_base_path = path.parent().unwrap_or(base_path);
+            self.recursively_collect_linked_files(&contents, new_base_path, linked_files)
                 .await?;
 
             Ok(())
