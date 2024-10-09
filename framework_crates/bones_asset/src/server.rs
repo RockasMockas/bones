@@ -643,8 +643,8 @@ impl AssetServer {
 
         // Collect and load linked files
         println!("Collecting and loading linked files.");
-        info!("Collecting and loading linked files!");
-        loader.collect_and_load_linked_files(contents).await?;
+        let results = loader.collect_and_load_linked_files(contents).await?;
+        println!("loading results: {:?}", results);
 
         let data = if loc.path.extension().unwrap().to_str().unwrap() == "json" {
             let mut deserializer = serde_json::Deserializer::from_slice(contents);
@@ -1059,7 +1059,7 @@ mod metadata {
             self.recursively_collect_linked_files(contents, &mut linked_files)
                 .await?;
             self.loaded_linked_files = linked_files;
-            info!("loaded linked files: {:?}", self.loaded_linked_files);
+            println!("loaded linked files: {:?}", self.loaded_linked_files);
             Ok(())
         }
 
