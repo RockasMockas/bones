@@ -643,7 +643,9 @@ impl AssetServer {
 
         // Collect and load linked files
         println!("Collecting and loading linked files.");
-        let results = loader.collect_and_load_linked_files(contents).await?;
+        let results = loader
+            .collect_and_load_linked_files(contents, loc.path)
+            .await?;
         println!("loading results: {:?}", results);
 
         let data = if loc.path.extension().unwrap().to_str().unwrap() == "json" {
@@ -1052,24 +1054,25 @@ mod metadata {
     impl<'srv> MetaAssetLoadCtx<'srv> {
         /// Collects and loads all path-based value
         pub async fn collect_and_load_linked_files(
-            &mut self,
+            &self,
             contents: &[u8],
-        ) -> anyhow::Result<()> {
+            base_path: &Path,
+        ) -> anyhow::Result<DashMap<PathBuf, SchemaBox>> {
             let mut linked_files = DashMap::new();
-            self.recursively_collect_linked_files(contents, &mut linked_files)
+            self.recursively_collect_linked_files(contents, base_path, &mut linked_files)
                 .await?;
-            self.loaded_linked_files = linked_files;
-            println!("loaded linked files: {:?}", self.loaded_linked_files);
-            Ok(())
+            Ok(linked_files)
         }
 
         async fn recursively_collect_linked_files(
             &self,
             contents: &[u8],
+            base_path: &Path,
             linked_files: &mut DashMap<PathBuf, SchemaBox>,
         ) -> anyhow::Result<()> {
             let yaml_docs = serde_yaml::from_slice::<serde_yaml::Value>(contents)?;
-            self.process_yaml_value(&yaml_docs, linked_files).await?;
+            self.process_yaml_value(&yaml_docs, base_path, linked_files)
+                .await?;
             Ok(())
         }
 
@@ -1077,14 +1080,17 @@ mod metadata {
         async fn process_yaml_value(
             &self,
             value: &serde_yaml::Value,
+            base_path: &Path,
             linked_files: &mut DashMap<PathBuf, SchemaBox>,
         ) -> anyhow::Result<()> {
+            println!("Processing YAML value: {:?}", value);
             match value {
                 serde_yaml::Value::String(s) => {
                     println!("Found string value: {}", s);
-                    if let Some(path) = self.is_valid_file_path(s) {
+                    if let Some(path) = self.is_valid_file_path(s, base_path) {
                         println!("Valid file path found: {:?}", path);
-                        self.load_and_add_linked_file(path, linked_files).await?;
+                        self.load_and_add_linked_file(path, base_path, linked_files)
+                            .await?;
                     } else {
                         println!("Not a valid file path: {}", s);
                     }
@@ -1093,14 +1099,15 @@ mod metadata {
                     println!("Processing sequence with {} items", seq.len());
                     for (index, item) in seq.iter().enumerate() {
                         println!("Processing sequence item {}", index);
-                        self.process_yaml_value(item, linked_files).await?;
+                        self.process_yaml_value(item, base_path, linked_files)
+                            .await?;
                     }
                 }
                 serde_yaml::Value::Mapping(map) => {
                     println!("Processing mapping with {} items", map.len());
                     for (key, v) in map {
                         println!("Processing mapping key: {:?}", key);
-                        self.process_yaml_value(v, linked_files).await?;
+                        self.process_yaml_value(v, base_path, linked_files).await?;
                     }
                 }
                 _ => {
@@ -1110,61 +1117,59 @@ mod metadata {
             Ok(())
         }
 
-   fn is_valid_file_path(&self, s: &str) -> Option<PathBuf> {
-        println!("Checking if valid file path: {}", s);
-        let path = PathBuf::from(s);
+        fn is_valid_file_path(&self, s: &str, base_path: &Path) -> Option<PathBuf> {
+            println!("Checking if valid file path: {}", s);
+            let path = PathBuf::from(s);
 
-        // Get the base path from the current asset's location
-        let base_path = self.loc.path.parent()?;
+            // Combine the base path with the given path
+            let full_path = base_path.join(&path);
 
-        // Combine the base path with the given path
-        let full_path = base_path.join(&path);
-
-        println!("Checking path: {:?}", full_path);
-        if full_path.exists() {
-            println!("Valid path found: {:?}", full_path);
-            Some(full_path)
-        } else {
-            println!("Path does not exist: {:?}", full_path);
-            None
-        }
-    }
-
-    #[async_recursion]
-    async fn load_and_add_linked_file(
-        &self,
-        path: PathBuf,
-        linked_files: &mut DashMap<PathBuf, SchemaBox>,
-    ) -> anyhow::Result<()> {
-        println!("Loading and adding linked file: {:?}", path);
-        if linked_files.contains_key(&path) {
-            println!("File already loaded: {:?}", path);
-            return Ok(());
+            println!("Checking path: {:?}", full_path);
+            if full_path.exists() {
+                println!("Valid path found: {:?}", full_path);
+                Some(full_path)
+            } else {
+                println!("Path does not exist: {:?}", full_path);
+                None
+            }
         }
 
-        // Use the relative path from the current asset's location
-        let relative_path = path.strip_prefix(self.loc.path.parent().unwrap()).unwrap_or(&path);
+        #[async_recursion]
+        async fn load_and_add_linked_file(
+            &self,
+            path: PathBuf,
+            base_path: &Path,
+            linked_files: &mut DashMap<PathBuf, SchemaBox>,
+        ) -> anyhow::Result<()> {
+            println!("Loading and adding linked file: {:?}", path);
+            if linked_files.contains_key(&path) {
+                println!("File already loaded: {:?}", path);
+                return Ok(());
+            }
 
-        let contents = self
-            .server
-            .io
-            .load_file(AssetLocRef {
-                path: relative_path,
-                pack: self.loc.pack,
-            })
-            .await?;
-        println!("File contents loaded, size: {} bytes", contents.len());
-        let schema_box = self.load_file_contents(&path, &contents).await?;
-        println!("File contents loaded into SchemaBox");
-        linked_files.insert(path.clone(), schema_box);
-        println!("SchemaBox inserted into linked_files");
+            // Calculate the relative path from the base_path
+            let relative_path = path.strip_prefix(base_path).unwrap_or(&path);
 
-        println!("Recursively processing loaded file");
-        self.recursively_collect_linked_files(&contents, linked_files)
-            .await?;
+            let contents = self
+                .server
+                .io
+                .load_file(AssetLocRef {
+                    path: relative_path,
+                    pack: self.loc.pack,
+                })
+                .await?;
+            println!("File contents loaded, size: {} bytes", contents.len());
+            let schema_box = self.load_file_contents(&path, &contents).await?;
+            println!("File contents loaded into SchemaBox");
+            linked_files.insert(path.clone(), schema_box);
+            println!("SchemaBox inserted into linked_files");
 
-        Ok(())
-    }
+            println!("Recursively processing loaded file");
+            self.recursively_collect_linked_files(&contents, base_path, linked_files)
+                .await?;
+
+            Ok(())
+        }
 
         async fn load_file_contents(
             &self,
