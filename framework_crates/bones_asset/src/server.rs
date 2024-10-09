@@ -1079,39 +1079,56 @@ mod metadata {
             value: &serde_yaml::Value,
             linked_files: &mut DashMap<PathBuf, SchemaBox>,
         ) -> anyhow::Result<()> {
+            println!("Processing YAML value: {:?}", value);
             match value {
                 serde_yaml::Value::String(s) => {
+                    println!("Found string value: {}", s);
                     if let Some(path) = self.is_valid_file_path(s) {
+                        println!("Valid file path found: {:?}", path);
                         self.load_and_add_linked_file(path, linked_files).await?;
+                    } else {
+                        println!("Not a valid file path: {}", s);
                     }
                 }
                 serde_yaml::Value::Sequence(seq) => {
-                    for item in seq {
+                    println!("Processing sequence with {} items", seq.len());
+                    for (index, item) in seq.iter().enumerate() {
+                        println!("Processing sequence item {}", index);
                         self.process_yaml_value(item, linked_files).await?;
                     }
                 }
                 serde_yaml::Value::Mapping(map) => {
-                    for (_, v) in map {
+                    println!("Processing mapping with {} items", map.len());
+                    for (key, v) in map {
+                        println!("Processing mapping key: {:?}", key);
                         self.process_yaml_value(v, linked_files).await?;
                     }
                 }
-                _ => {} // Ignore other YAML value types
+                _ => {
+                    println!("Ignoring YAML value type: {:?}", value);
+                }
             }
             Ok(())
         }
 
         fn is_valid_file_path(&self, s: &str) -> Option<PathBuf> {
+            println!("Checking if valid file path: {}", s);
             let path = PathBuf::from(s);
             if path.is_relative() {
                 let absolute_path = self.loc.path.parent()?.join(&path);
+                println!("Checking relative path: {:?}", absolute_path);
                 if absolute_path.exists() {
+                    println!("Valid relative path found: {:?}", absolute_path);
                     Some(absolute_path)
                 } else {
+                    println!("Relative path does not exist: {:?}", absolute_path);
                     None
                 }
             } else if path.exists() {
+                println!("Valid absolute path found: {:?}", path);
                 Some(path)
             } else {
+                println!("Path does not exist: {:?}", path);
                 None
             }
         }
@@ -1122,7 +1139,9 @@ mod metadata {
             path: PathBuf,
             linked_files: &mut DashMap<PathBuf, SchemaBox>,
         ) -> anyhow::Result<()> {
+            println!("Loading and adding linked file: {:?}", path);
             if linked_files.contains_key(&path) {
+                println!("File already loaded: {:?}", path);
                 return Ok(());
             }
 
@@ -1134,10 +1153,13 @@ mod metadata {
                     pack: self.loc.pack,
                 })
                 .await?;
+            println!("File contents loaded, size: {} bytes", contents.len());
             let schema_box = self.load_file_contents(&path, &contents).await?;
+            println!("File contents loaded into SchemaBox");
             linked_files.insert(path.clone(), schema_box);
+            println!("SchemaBox inserted into linked_files");
 
-            // Recursively process the loaded file
+            println!("Recursively processing loaded file");
             self.recursively_collect_linked_files(&contents, linked_files)
                 .await?;
 
@@ -1149,7 +1171,9 @@ mod metadata {
             path: &Path,
             contents: &[u8],
         ) -> anyhow::Result<SchemaBox> {
+            println!("Loading file contents for: {:?}", path);
             let file_extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+            println!("File extension: {}", file_extension);
             let schema = SCHEMA_REGISTRY
                 .schemas
                 .iter()
@@ -1168,8 +1192,8 @@ mod metadata {
                 .ok_or_else(|| {
                     anyhow::anyhow!("No schema found for file extension: {}", file_extension)
                 })?;
+            println!("Schema found: {:?}", schema.name);
 
-            // Use the appropriate loader for the file type
             let loader = schema
                 .type_data
                 .get::<AssetKind>()
@@ -1181,6 +1205,7 @@ mod metadata {
                     }
                 })
                 .ok_or_else(|| anyhow::anyhow!("No loader found for file type"))?;
+            println!("Loader found for file type");
 
             let ctx = AssetLoadCtx {
                 asset_server: self.server.clone(),
@@ -1191,7 +1216,10 @@ mod metadata {
                 dependencies: Arc::new(AppendOnlyVec::new()),
             };
 
-            loader.load(ctx, contents).await
+            println!("Loading file with custom loader");
+            let schema_box = loader.load(ctx, contents).await?;
+            println!("File loaded into SchemaBox");
+            Ok(schema_box)
         }
     }
 
