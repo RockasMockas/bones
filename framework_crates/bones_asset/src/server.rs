@@ -1048,6 +1048,7 @@ mod metadata {
     }
 
     impl<'srv> MetaAssetLoadCtx<'srv> {
+        /// Collects and loads all path-based value
         pub async fn collect_and_load_linked_files(
             &mut self,
             contents: &[u8],
@@ -1056,6 +1057,7 @@ mod metadata {
             self.recursively_collect_linked_files(contents, &mut linked_files)
                 .await?;
             self.loaded_linked_files = linked_files;
+            info!("Loaded linked files: {:?}", self.loaded_linked_files);
             Ok(())
         }
 
@@ -1239,6 +1241,7 @@ mod metadata {
                 .get::<SchemaAssetHandle>()
                 .is_some();
 
+            // if is_handle || is_linked_file {
             if is_handle {
                 let path_string = String::deserialize(deserializer)?;
 
