@@ -3,9 +3,11 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use crate::prelude::*;
 use anyhow::Context;
 use append_only_vec::AppendOnlyVec;
 use async_channel::{Receiver, Sender};
+use async_recursion::async_recursion;
 use bevy_tasks::IoTaskPool;
 use bones_utils::{default, Deref, DerefMut, UlidExt};
 use dashmap::{
@@ -22,8 +24,6 @@ use serde::{de::DeserializeSeed, Deserialize};
 #[allow(unused_imports)]
 use tracing::info;
 use ulid::Ulid;
-
-use crate::prelude::*;
 
 mod schema_loader;
 
@@ -633,12 +633,17 @@ impl AssetServer {
             cid_debug.cid_after_contents = cid;
         }
 
-        let loader = MetaAssetLoadCtx {
+        let mut loader = MetaAssetLoadCtx {
             server: self,
             loc,
             schema,
             dependencies: &mut dependencies,
+            loaded_linked_files: DashMap::new(), // Initialize the new field
         };
+
+        // Collect and load linked files
+        loader.collect_and_load_linked_files(contents).await?;
+
         let data = if loc.path.extension().unwrap().to_str().unwrap() == "json" {
             let mut deserializer = serde_json::Deserializer::from_slice(contents);
             loader.deserialize(&mut deserializer)?
@@ -1038,6 +1043,152 @@ mod metadata {
         pub loc: AssetLocRef<'srv>,
         /// The schema of the asset being loaded.
         pub schema: &'static Schema,
+        /// Hashmap containing the data from linked files
+        pub loaded_linked_files: DashMap<PathBuf, SchemaBox>,
+    }
+
+    impl<'srv> MetaAssetLoadCtx<'srv> {
+        pub async fn collect_and_load_linked_files(
+            &mut self,
+            contents: &[u8],
+        ) -> anyhow::Result<()> {
+            let mut linked_files = DashMap::new();
+            self.recursively_collect_linked_files(contents, &mut linked_files)
+                .await?;
+            self.loaded_linked_files = linked_files;
+            Ok(())
+        }
+
+        async fn recursively_collect_linked_files(
+            &self,
+            contents: &[u8],
+            linked_files: &mut DashMap<PathBuf, SchemaBox>,
+        ) -> anyhow::Result<()> {
+            let yaml_docs = serde_yaml::from_slice::<serde_yaml::Value>(contents)?;
+            self.process_yaml_value(&yaml_docs, linked_files).await?;
+            Ok(())
+        }
+
+        #[async_recursion]
+        async fn process_yaml_value(
+            &self,
+            value: &serde_yaml::Value,
+            linked_files: &mut DashMap<PathBuf, SchemaBox>,
+        ) -> anyhow::Result<()> {
+            match value {
+                serde_yaml::Value::String(s) => {
+                    if let Some(path) = self.is_valid_file_path(s) {
+                        self.load_and_add_linked_file(path, linked_files).await?;
+                    }
+                }
+                serde_yaml::Value::Sequence(seq) => {
+                    for item in seq {
+                        self.process_yaml_value(item, linked_files).await?;
+                    }
+                }
+                serde_yaml::Value::Mapping(map) => {
+                    for (_, v) in map {
+                        self.process_yaml_value(v, linked_files).await?;
+                    }
+                }
+                _ => {} // Ignore other YAML value types
+            }
+            Ok(())
+        }
+
+        fn is_valid_file_path(&self, s: &str) -> Option<PathBuf> {
+            let path = PathBuf::from(s);
+            if path.is_relative() {
+                let absolute_path = self.loc.path.parent()?.join(&path);
+                if absolute_path.exists() {
+                    Some(absolute_path)
+                } else {
+                    None
+                }
+            } else if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
+        }
+
+        #[async_recursion]
+        async fn load_and_add_linked_file(
+            &self,
+            path: PathBuf,
+            linked_files: &mut DashMap<PathBuf, SchemaBox>,
+        ) -> anyhow::Result<()> {
+            if linked_files.contains_key(&path) {
+                return Ok(());
+            }
+
+            let contents = self
+                .server
+                .io
+                .load_file(AssetLocRef {
+                    path: path.as_path(),
+                    pack: self.loc.pack,
+                })
+                .await?;
+            let schema_box = self.load_file_contents(&path, &contents).await?;
+            linked_files.insert(path.clone(), schema_box);
+
+            // Recursively process the loaded file
+            self.recursively_collect_linked_files(&contents, linked_files)
+                .await?;
+
+            Ok(())
+        }
+
+        async fn load_file_contents(
+            &self,
+            path: &Path,
+            contents: &[u8],
+        ) -> anyhow::Result<SchemaBox> {
+            let file_extension = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
+            let schema = SCHEMA_REGISTRY
+                .schemas
+                .iter()
+                .find(|schema| {
+                    schema
+                        .type_data
+                        .get::<AssetKind>()
+                        .and_then(|asset_kind| match asset_kind {
+                            AssetKind::Custom { extensions, .. } => {
+                                Some(extensions.contains(&file_extension.to_string()))
+                            }
+                            _ => Some(false),
+                        })
+                        .unwrap_or(false)
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("No schema found for file extension: {}", file_extension)
+                })?;
+
+            // Use the appropriate loader for the file type
+            let loader = schema
+                .type_data
+                .get::<AssetKind>()
+                .and_then(|asset_kind| {
+                    if let AssetKind::Custom { loader, .. } = asset_kind {
+                        Some(loader)
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| anyhow::anyhow!("No loader found for file type"))?;
+
+            let ctx = AssetLoadCtx {
+                asset_server: self.server.clone(),
+                loc: AssetLoc {
+                    path: path.to_path_buf(),
+                    pack: self.loc.pack.map(|s| s.to_string()),
+                },
+                dependencies: Arc::new(AppendOnlyVec::new()),
+            };
+
+            loader.load(ctx, contents).await
+        }
     }
 
     impl<'asset, 'de> DeserializeSeed<'de> for MetaAssetLoadCtx<'asset> {
@@ -1075,15 +1226,36 @@ mod metadata {
         where
             D: serde::Deserializer<'de>,
         {
+            // // First, check if this is a linked file
+            // if let Ok(path) = String::deserialize(deserializer) {
+            // }
+
             // Load asset handles.
-            if self
+            // TODO: Add and OR check that if self is somehow also marked as a linked file
+            let is_handle = self
                 .ptr
                 .schema()
                 .type_data
                 .get::<SchemaAssetHandle>()
-                .is_some()
-            {
+                .is_some();
+
+            if is_handle {
                 let path_string = String::deserialize(deserializer)?;
+
+                // // If it is a linked file then fetch it and use it
+                //     if let Some(linked_file) = self.ctx.loaded_linked_files.get(path_string) &&
+                //     !is_handle {
+                //         // Copy the data from the linked file to this pointer
+                //         unsafe {
+                //             std::ptr::copy_nonoverlapping(
+                //                 linked_file.as_ref().as_ptr(),
+                //                 self.ptr.as_ptr(),
+                //                 self.ptr.schema().layout().size(),
+                //             );
+                //         }
+                //         return Ok(());
+                //     }
+
                 let mut pack = self.ctx.loc.pack.map(|x| x.to_owned());
                 let relative_path;
                 if let Some((pack_prefix, path)) = path_string.split_once(':') {
